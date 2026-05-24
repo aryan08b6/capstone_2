@@ -20,6 +20,7 @@ class SLAMWithFPGAAcceleration:
     def __init__(self,
                  K=None,
                  enable_fpga=True,
+                 use_fpga_pipeline=False,
                  use_fpga_fast=True,
                  use_fpga_gauss=False,
                  max_features=2000,
@@ -30,6 +31,7 @@ class SLAMWithFPGAAcceleration:
 
         self.K = DEFAULT_K if K is None else np.asarray(K, np.float64)
         self.enable_fpga = enable_fpga
+        self.use_fpga_pipeline = use_fpga_pipeline
         self.use_fpga_fast = use_fpga_fast
         self.use_fpga_gauss = use_fpga_gauss
 
@@ -75,7 +77,11 @@ class SLAMWithFPGAAcceleration:
 
         # Process through core SLAM with potential feature detection override
         if not self.slam._ready:
-            self._init_step_with_fpga(gray, out)
+            # Use full pipeline if enabled
+            if self.use_fpga_pipeline and self.enable_fpga and self.fpga:
+                self._init_step_with_pipeline(gray, out)
+            else:
+                self._init_step_with_fpga(gray, out)
         else:
             self.slam._track_step(gray, out)
             if self.slam.is_initialised:
@@ -83,7 +89,125 @@ class SLAMWithFPGAAcceleration:
 
         return out
 
-    def _init_step_with_fpga(self, gray: np.ndarray, out: np.ndarray):
+    def _process_with_pipeline(self, gray: np.ndarray):
+        """Process frame through full FPGA pipeline, extract and return corners."""
+        if not self.fpga:
+            return None
+
+        try:
+            pipeline_result = self.fpga.process_pipeline_full(gray, self.slam._prev_gray)
+
+            if len(pipeline_result['corners']) > 0:
+                corners = np.array(pipeline_result['corners'], dtype=np.float32)
+                self.fpga_corners_detected += len(corners)
+
+                # Store metadata for debugging
+                self.fpga_last_result = {
+                    'num_corners': len(corners),
+                    'sad_values': pipeline_result['sad_values'],
+                    'disparities': pipeline_result['disparities'],
+                    'time_ms': pipeline_result['processing_time_ms']
+                }
+
+                return corners
+            else:
+                return np.array([], dtype=np.float32)
+
+        except Exception as e:
+            print(f"[SLAM] FPGA pipeline error: {e}")
+            return None
+
+    def _init_step_with_pipeline(self, gray: np.ndarray, out: np.ndarray):
+        """Initialization with FPGA full pipeline."""
+        if self.slam._init_frame is None:
+            self.slam._init_frame = Frame(gray)
+
+            # Use FPGA pipeline for corner detection
+            corners = self._process_with_pipeline(gray)
+            if corners is not None and len(corners) > 0:
+                self.slam._init_pts2d = corners
+                self.use_fpga_stats = True
+            else:
+                self.slam._init_pts2d = self.slam._tracker.detect(gray)
+                self.cpu_corners_detected += len(self.slam._init_pts2d)
+
+            self.slam._prev_gray = gray
+            self._put(out, "Move camera slowly to initialise…", (10, 28), (100, 220, 255))
+            return
+
+        # Track from init-frame to current
+        curr_pts, mask = self.slam._tracker.track(
+            self.slam._init_frame.gray, gray, self.slam._init_pts2d)
+        p0, p1 = self.slam._init_pts2d[mask], curr_pts[mask]
+        n_match = len(p0)
+
+        self._put(out, f"Init  {n_match}/{self.slam._p['min_init']} matches…",
+                 (10, 28), (100, 220, 255))
+
+        if n_match < self.slam._p['min_init']:
+            if n_match < 15:
+                self.slam._init_frame = Frame(gray)
+                self.slam._init_pts2d = self.slam._tracker.detect(gray)
+                self.slam._prev_gray = gray
+            return
+
+        # Essential matrix estimation
+        E, mask_E = cv2.findEssentialMat(
+            p1, p0, self.K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
+        if E is None:
+            return
+
+        inl_E = mask_E.ravel().astype(bool)
+        if inl_E.sum() < self.slam._p['min_init'] // 2:
+            return
+
+        # Recover pose
+        _, R, t, mask_ch = cv2.recoverPose(E, p1[inl_E], p0[inl_E], self.K)
+        ch = mask_ch.ravel().astype(bool)
+        pp0, pp1 = p0[inl_E][ch], p1[inl_E][ch]
+        if len(pp0) < 10:
+            return
+
+        # Triangulate
+        pose0 = np.eye(4)
+        pose1 = np.eye(4)
+        pose1[:3, :3] = R
+        pose1[:3, 3] = t.ravel()
+        P0, P1 = self.K @ pose0[:3], self.K @ pose1[:3]
+
+        from slam_core import triangulate, good_pts_mask
+        pts3d = triangulate(P0, P1, pp0, pp1)
+        good = good_pts_mask(pts3d, pose0, pose1)
+        if good.sum() < 10:
+            return
+
+        # Scale normalization
+        med = np.median(pts3d[good, 2])
+        if med <= 0:
+            return
+        pts3d /= med
+        pose1[:3, 3] /= med
+
+        # Store state
+        self.slam.pts3d = pts3d[good].astype(np.float64)
+        self.slam.pts2d = pp1[good].astype(np.float32)
+        self.slam.pose = pose1.copy()
+
+        kf0 = self.slam._init_frame
+        kf0.pose = pose0
+        kf0.pts2d = pp0[good]
+        kf1 = Frame(gray, pose1)
+        kf1.pts2d = pp1[good]
+        self.slam.keyframes.extend([kf0, kf1])
+
+        self.slam._prev_gray = gray
+        self.slam._ready = True
+
+        accel_tag = "[FPGA]" if self.use_fpga_stats else "[CPU]"
+        print(f"[SLAM] Initialised {accel_tag}  |  {good.sum()} map points  "
+              f"|  baseline = {np.linalg.norm(t) / med:.4f}  "
+              f"|  frame #{self.slam.n_frames}")
+
         """Initialization with FPGA corner detection option."""
         if self.slam._init_frame is None:
             self.slam._init_frame = Frame(gray)

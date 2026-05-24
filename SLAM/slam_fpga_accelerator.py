@@ -21,6 +21,7 @@ class SLAMFPGAAccelerator:
     SAD_MATCHING = 2
     ORB_DESCRIPTOR = 3
     PASSTHROUGH = 4
+    PIPELINE_FULL = 5  # Gaussian → FAST → ORB → SAD
 
     def __init__(self, spi_bus=0, spi_device=0, speed_hz=1000000):
         """Initialize SPI connection to FPGA."""
@@ -31,8 +32,12 @@ class SLAMFPGAAccelerator:
         self.current_mode = self.PASSTHROUGH
 
     def set_mode(self, mode):
-        """Select computation mode."""
+        """Select computation mode via SPI command byte."""
         self.current_mode = mode
+        # Send mode selection command to FPGA (0x80 | mode)
+        cmd = [0x80 | (mode & 0x07), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        self.spi.xfer(cmd)
+        time.sleep(0.001)  # Small delay for FPGA to switch modes
 
     def send_64bit(self, data):
         """Send 64-bit data to FPGA and receive result."""
@@ -52,6 +57,76 @@ class SLAMFPGAAccelerator:
         rx = self.spi.xfer(dummy_bytes)
 
         return rx
+
+    def recv_pipeline_result(self):
+        """Receive 8-byte aggregated result from FPGA pipeline."""
+        dummy_bytes = [0x00] * 8
+        rx_data = self.spi.xfer(dummy_bytes)
+
+        result = {
+            'corner_flags': rx_data[0],        # Byte 0: 8-bit corner bitmask
+            'corner_strength': rx_data[1],     # Byte 1: 8-bit strength
+            'sad_value_lo': rx_data[2],        # Byte 2: SAD lower 8 bits
+            'sad_value_hi': rx_data[3],        # Byte 3: SAD upper 8 bits
+            'disparity': rx_data[4],           # Byte 4: Disparity offset
+            'descriptor_chunk': bytes(rx_data[5:])  # Bytes 5-7: Descriptor start
+        }
+
+        result['sad_value'] = (result['sad_value_hi'] << 8) | result['sad_value_lo']
+        return result
+
+    def process_pipeline_full(self, image, prev_image=None):
+        """
+        Process image through full FPGA pipeline: Gaussian → FAST → ORB → SAD.
+
+        Args:
+            image: Input grayscale image (H x W) or BGR to be converted
+            prev_image: Optional previous frame for temporal tracking
+
+        Returns:
+            dict with keys: 'corners', 'corner_strengths', 'sad_values',
+                          'disparities', 'processing_time_ms'
+        """
+        if image.ndim == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        height, width = image.shape
+        self.set_mode(self.PIPELINE_FULL)
+
+        results = {
+            'corners': [],
+            'corner_strengths': [],
+            'sad_values': [],
+            'disparities': [],
+            'raw_flags': []
+        }
+
+        t_start = time.time()
+
+        # Process image in 8-pixel chunks row by row
+        for y in range(1, height - 1):
+            for x in range(0, width - 7, 8):
+                # Extract 8-pixel chunks from current row
+                curr_chunk = image[y, x:x+8].astype(np.uint8)
+
+                # Send current row chunk to FPGA
+                self.send_64bit(curr_chunk)
+
+                # Receive aggregated result from FPGA
+                result = self.recv_pipeline_result()
+
+                # Parse corner flags (8-bit bitmask)
+                for i in range(8):
+                    if (result['corner_flags'] >> i) & 1:
+                        results['corners'].append((x + i, y))
+                        results['corner_strengths'].append(result['corner_strength'])
+
+                results['sad_values'].append(result['sad_value'])
+                results['disparities'].append(result['disparity'])
+                results['raw_flags'].append(result['corner_flags'])
+
+        results['processing_time_ms'] = (time.time() - t_start) * 1000
+        return results
 
     def detect_fast_corners(self, image, prev_row=None, next_row=None):
         """

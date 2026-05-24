@@ -97,58 +97,156 @@ module spi_slave_slam_offload (
     end
 
     // -----------------------------------------------------------------
-    // Block 2: SLAM Computation Modules
+    // Block 2: SLAM Computation Modules with Pipeline Architecture
     // -----------------------------------------------------------------
 
-    // Storage for FAST corner detection
+    // Pipeline state machine states
+    localparam STATE_IDLE    = 3'b000;
+    localparam STATE_RECEIVE = 3'b001;
+    localparam STATE_FAST    = 3'b010;
+    localparam STATE_ORB     = 3'b011;
+    localparam STATE_SAD     = 3'b100;
+    localparam STATE_OUTPUT  = 3'b101;
+
+    // Pipeline mode selection (from SPI command)
+    localparam PIPELINE_FULL = 3'b101;  // Gaussian → FAST → ORB → SAD
+
+    reg [2:0] proc_state = 0;
+    reg [2:0] pipeline_mode = 0;
+
+    // Row buffers for Gaussian filter context
+    reg [63:0] gaussian_prev_row = 0;
+    reg [63:0] gaussian_curr_row = 0;
+    reg [63:0] gaussian_next_row = 0;
+
+    // Intermediate pipeline results
+    reg [63:0] gaussian_out_buf = 0;
+    reg [7:0]  fast_flags_buf = 0;
+    reg [7:0]  fast_strength_buf = 0;
+    reg [63:0] orb_descriptor_buf = 0;
+    reg [31:0] sad_value_buf = 0;
+    reg [7:0]  disparity_buf = 0;
+
+    // Storage for FAST corner detection (for non-pipeline mode compatibility)
     reg [63:0] prev_row_data = 0;
     reg [63:0] next_row_data = 0;
+
+    // Instantiate Gaussian Filter
+    wire [63:0] gaussian_filtered;
+    gaussian_filter gauss_inst (
+        .clk(clk),
+        .current_row(gaussian_curr_row),
+        .prev_row(gaussian_prev_row),
+        .next_row(gaussian_next_row),
+        .filtered_data(gaussian_filtered)
+    );
 
     // Instantiate FAST corner detector
     wire [7:0] fast_flags;
     wire [7:0] fast_strength;
     fast_corner_detector fast_inst (
         .clk(clk),
-        .pixel_data(in_fifo_q),
-        .prev_row(prev_row_data),
-        .next_row(next_row_data),
+        .pixel_data(gaussian_out_buf),  // Use filtered data for pipeline mode
+        .prev_row(gaussian_prev_row),
+        .next_row(gaussian_next_row),
         .corner_flags(fast_flags),
         .corner_strength(fast_strength)
     );
 
+    // Instantiate ORB Descriptor
+    wire [63:0] orb_descriptor_result;
+    wire orb_descriptor_valid;
+    orb_descriptor orb_inst (
+        .clk(clk),
+        .patch_data(gaussian_out_buf),
+        .patch_data2(gaussian_out_buf),
+        .descriptor(orb_descriptor_result),
+        .descriptor_valid(orb_descriptor_valid)
+    );
+
+    // Instantiate SAD Block Matcher
+    wire [31:0] sad_result;
+    wire [7:0] best_disparity_result;
+    sad_block_matcher sad_inst (
+        .clk(clk),
+        .left_block(orb_descriptor_buf),
+        .right_block(gaussian_out_buf),
+        .disparity_offset(8'd0),
+        .sad_value(sad_result),
+        .best_disparity(best_disparity_result)
+    );
+
     // -----------------------------------------------------------------
-    // Block 2B: Processor FSM - FAST Corner Detection Only
+    // Block 2B: Pipeline FSM - Gaussian → FAST → ORB → SAD
     // -----------------------------------------------------------------
-    reg [2:0] proc_state = 0;
 
     always @(posedge clk) begin
         in_fifo_rd_en  <= 0;
         out_fifo_wr_en <= 0;
 
         case (proc_state)
-            0: begin // Idle - wait for input data
+            STATE_IDLE: begin
                 if (!in_fifo_empty && !out_fifo_full) begin
-                    in_fifo_rd_en <= 1;
-                    proc_state    <= 1;
+                    // Check mode from first byte of input
+                    if ((in_fifo_q[7:5] == 3'b100) || (in_fifo_q[7:5] == 3'b101)) begin
+                        // Pipeline mode (0x80-0x9F command range)
+                        pipeline_mode <= in_fifo_q[2:0];
+                        in_fifo_rd_en <= 1;
+                        proc_state <= STATE_RECEIVE;
+                    end else begin
+                        // Fallback to existing FAST-only mode
+                        in_fifo_rd_en <= 1;
+                        proc_state <= STATE_RECEIVE;
+                    end
                 end
             end
-            1: begin // Data fetched, prepare for computation
-                proc_state <= 2;
-            end
-            2: begin // Execute FAST corner detection
-                out_fifo_data <= {fast_strength, fast_flags, 48'b0};
-                out_fifo_wr_en <= 1;
-                proc_state <= 0;
-            end
-        endcase
 
-        // Store current and neighboring rows for FAST corner detection
-        if (proc_state == 0) begin
-            prev_row_data <= in_fifo_q;
-        end
-        if (proc_state == 1) begin
-            next_row_data <= in_fifo_q;
-        end
+            STATE_RECEIVE: begin
+                // Shift row buffers for Gaussian context
+                gaussian_prev_row <= gaussian_curr_row;
+                gaussian_curr_row <= gaussian_next_row;
+                gaussian_next_row <= in_fifo_q;
+
+                // Apply Gaussian filter immediately
+                gaussian_out_buf <= gaussian_filtered;
+
+                proc_state <= STATE_FAST;
+            end
+
+            STATE_FAST: begin
+                // FAST detection on buffered rows
+                fast_flags_buf <= fast_flags;
+                fast_strength_buf <= fast_strength;
+                proc_state <= STATE_ORB;
+            end
+
+            STATE_ORB: begin
+                // ORB descriptor extraction (run if corners detected)
+                if (fast_flags_buf != 8'b0) begin
+                    orb_descriptor_buf <= orb_descriptor_result;
+                end else begin
+                    orb_descriptor_buf <= 64'b0;
+                end
+                proc_state <= STATE_SAD;
+            end
+
+            STATE_SAD: begin
+                // SAD block matching
+                sad_value_buf <= sad_result;
+                disparity_buf <= best_disparity_result;
+                proc_state <= STATE_OUTPUT;
+            end
+
+            STATE_OUTPUT: begin
+                // Format output: [disparity:8 | sad_hi:8 | sad_lo:8 | strength:8 | flags:8 | reserved:24]
+                out_fifo_data <= {disparity_buf, sad_value_buf[15:8],
+                                 sad_value_buf[7:0], fast_strength_buf, fast_flags_buf};
+                out_fifo_wr_en <= 1;
+                proc_state <= STATE_IDLE;
+            end
+
+            default: proc_state <= STATE_IDLE;
+        endcase
     end
 
     // -----------------------------------------------------------------
