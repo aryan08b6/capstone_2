@@ -7,7 +7,7 @@ Offloads FAST corner detection, Gaussian filtering, and descriptor extraction.
 
 import cv2
 import numpy as np
-from slam_core import MonocularSLAM, LKTracker, DEFAULT_K
+from slam_core import MonocularSLAM, LKTracker, DEFAULT_K, Frame
 from slam_fpga_accelerator import SLAMFPGAAccelerator
 
 
@@ -86,7 +86,7 @@ class SLAMWithFPGAAcceleration:
     def _init_step_with_fpga(self, gray: np.ndarray, out: np.ndarray):
         """Initialization with FPGA corner detection option."""
         if self.slam._init_frame is None:
-            self.slam._init_frame = self.slam.Frame(gray)
+            self.slam._init_frame = Frame(gray)
 
             # Use FPGA for corner detection if enabled
             if self.enable_fpga and self.use_fpga_fast and self.fpga:
@@ -118,7 +118,7 @@ class SLAMWithFPGAAcceleration:
 
         if n_match < self.slam._p['min_init']:
             if n_match < 15:
-                self.slam._init_frame = self.slam.Frame(gray)
+                self.slam._init_frame = Frame(gray)
                 self.slam._init_pts2d = self.slam._tracker.detect(gray)
                 self.slam._prev_gray = gray
             return
@@ -168,7 +168,7 @@ class SLAMWithFPGAAcceleration:
         kf0 = self.slam._init_frame
         kf0.pose = pose0
         kf0.pts2d = pp0[good]
-        kf1 = self.slam.Frame(gray, pose1)
+        kf1 = Frame(gray, pose1)
         kf1.pts2d = pp1[good]
         self.slam.keyframes.extend([kf0, kf1])
 
