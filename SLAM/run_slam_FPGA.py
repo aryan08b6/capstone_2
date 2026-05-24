@@ -373,10 +373,12 @@ def main():
         # Handle --fpga-pipeline flag: enables full pipeline (Gaussian + FAST)
         use_fpga_fast = (args.fpga_fast or args.fpga_pipeline) and not args.disable_fpga
         use_fpga_gauss = (args.fpga_gauss or args.fpga_pipeline) and not args.disable_fpga
+        use_fpga_pipeline = args.fpga_pipeline and not args.disable_fpga
         
         slam = SLAMWithFPGAAcceleration(
             K=K,
             enable_fpga=not args.disable_fpga,
+            use_fpga_pipeline=use_fpga_pipeline,
             use_fpga_fast=use_fpga_fast,
             use_fpga_gauss=use_fpga_gauss,
             max_features=2000,
@@ -475,10 +477,12 @@ def main():
             # Handle --fpga-pipeline flag: enables full pipeline (Gaussian + FAST)
             use_fpga_fast = (args.fpga_fast or args.fpga_pipeline) and not args.disable_fpga
             use_fpga_gauss = (args.fpga_gauss or args.fpga_pipeline) and not args.disable_fpga
+            use_fpga_pipeline = args.fpga_pipeline and not args.disable_fpga
             
             slam = SLAMWithFPGAAcceleration(
                 K=K,
                 enable_fpga=not args.disable_fpga,
+                use_fpga_pipeline=use_fpga_pipeline,
                 use_fpga_fast=use_fpga_fast,
                 use_fpga_gauss=use_fpga_gauss
             )

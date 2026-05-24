@@ -81,7 +81,7 @@ class SLAMWithFPGAAcceleration:
             if self.use_fpga_pipeline and self.enable_fpga and self.fpga:
                 self._init_step_with_pipeline(gray, out)
             else:
-                self._init_step_with_fpga(gray, out)
+                self.slam._init_step(gray, out)
         else:
             self.slam._track_step(gray, out)
             if self.slam.is_initialised:
