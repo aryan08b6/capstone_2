@@ -55,6 +55,14 @@ python3 run_slam_FPGA.py --fpga-fast --no-fpga-gauss
 python3 run_slam_FPGA.py --fpga-gauss
 ```
 
+### Enable Full FPGA Pipeline (NEW - Pipelined Mode)
+
+```bash
+python3 run_slam_FPGA.py --fpga-pipeline
+```
+
+Chains FPGA operations: **Gaussian → FAST Detection → ORB Descriptors → SAD Matching** for maximum throughput.
+
 ### Custom Camera Intrinsics
 
 ```bash
@@ -131,6 +139,9 @@ python3 run_slam_FPGA.py \
 --show-stats           Print FPGA acceleration statistics every 100 frames
                         Default: disabled
 
+--fpga-pipeline        Enable full FPGA pipeline (Gaussian → FAST → ORB → SAD)
+                        Default: disabled
+
 --spi-speed N          SPI bus speed in Hz
                         Default: 1000000 (1MHz)
 ```
@@ -181,6 +192,7 @@ When FPGA is available and enabled:
 - **Gaussian Filtering** (Mode 1): Smooths images for preprocessing
 - **SAD Block Matching** (Mode 2): Computes stereo disparities
 - **ORB Descriptors** (Mode 3): Generates binary feature descriptors
+- **Full Pipeline** (Mode 5 - NEW): Chains all operations for efficient data flow
 
 The Python interface automatically:
 - Sends 64-bit chunks of image data via SPI
@@ -225,6 +237,58 @@ With `--show-stats`, you'll see output like:
   FPGA Connected: True
   FPGA Corners Detected: 45128
   CPU Corners Detected: 0
+```
+
+## Pipelined FPGA Processing (NEW)
+
+The FPGA now supports a **full pipeline mode** that chains multiple operations for better throughput:
+
+### What is Pipelined Mode?
+
+Instead of processing each operation separately (request/response), the pipeline chains them:
+
+```
+Input Frame (64-bit chunks)
+    ↓
+[Gaussian Blur] → [FAST Corner Detection] → [ORB Descriptor] → [SAD Matching]
+    ↓
+Single Aggregated Result: {corners, strengths, SAD values, disparities}
+```
+
+### Benefits
+
+- **Lower Latency**: Multiple operations in single pipeline
+- **Higher Throughput**: Fewer CPU-FPGA round trips
+- **Efficient**: Reduced data transfers
+- **Better Scalability**: Designed for high-speed processing
+
+### Using Pipeline Mode
+
+```bash
+# Enable pipelined mode
+python3 run_slam_FPGA.py --fpga-pipeline
+
+# With statistics
+python3 run_slam_FPGA.py --fpga-pipeline --show-stats
+
+# With high resolution
+python3 run_slam_FPGA.py --fpga-pipeline --width 1280 --show-stats
+```
+
+### In Python Code
+
+```python
+from slam_fpga_integrated import SLAMWithFPGAAcceleration
+
+slam = SLAMWithFPGAAcceleration(
+    enable_fpga=True,
+    use_fpga_pipeline=True  # Enable pipelined mode
+)
+
+while processing:
+    frame = get_frame()
+    result = slam.process(frame)
+    # Results now include aggregated corner, SAD, and descriptor data
 ```
 
 ## Troubleshooting
@@ -313,6 +377,12 @@ python3 run_slam_FPGA.py --input frames/ --width 640 --show-stats
 ```bash
 python3 run_slam_FPGA.py --disable-fpga --show-stats
 ```
+
+### Maximum FPGA Pipeline (NEW - Pipelined Mode)
+```bash
+python3 run_slam_FPGA.py --fpga-pipeline --width 640 --show-stats
+```
+Uses the new chained pipeline for best throughput.
 
 ## File Structure
 

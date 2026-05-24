@@ -154,6 +154,46 @@ Each 64-bit descriptor contains:
 - **No real-time requirement**: Design prioritizes showcasing FPGA computation capability
 - **Scalability**: Can add more processing modules in parallel
 
+## Pipelined Processing (NEW)
+
+The system now supports **Mode 5: Full FPGA Pipeline** - a chained architecture that processes data through multiple stages:
+
+```
+Input Image (64-bit chunks)
+    ↓
+[Stage 1: Gaussian Blur] - Image preprocessing
+    ↓
+[Stage 2: FAST Corner Detection] - Feature detection
+    ↓
+[Stage 3: ORB Descriptor] - Binary descriptors
+    ↓
+[Stage 4: SAD Block Matcher] - Stereo matching
+    ↓
+Aggregated Result: {corners, strengths, SAD values, disparities}
+```
+
+**Benefits:**
+- **Reduced latency**: Multiple operations in single pipeline
+- **Better throughput**: Fewer CPU-FPGA round trips
+- **Lower bandwidth**: Aggregated results vs. individual mode results
+- **Efficient processing**: Data flows continuously through stages
+
+**Usage:**
+```python
+from slam_fpga_integrated import SLAMWithFPGAAcceleration
+
+slam = SLAMWithFPGAAcceleration(
+    enable_fpga=True,
+    use_fpga_pipeline=True  # Enable pipelined mode
+)
+result = slam.process(frame)
+```
+
+**Command Line:**
+```bash
+python3 run_slam_FPGA.py --fpga-pipeline --show-stats
+```
+
 ## Testing
 
 ### Unit Test (Passthrough Mode)
@@ -197,7 +237,7 @@ Processes video with FPGA-accelerated feature detection
 
 ## Future Enhancements
 
-1. **Pipelined Processing**: Chain multiple FPGA modules for continuous data flow
+1. ✅ **Pipelined Processing** (NOW IMPLEMENTED): Chain multiple FPGA modules for continuous data flow
 2. **Parallel Computation**: Run multiple computations on separate FPGA regions
 3. **Adaptive Thresholds**: Dynamically adjust FAST threshold based on image statistics
 4. **Stereo Rectification**: Implement on FPGA for optimized memory access

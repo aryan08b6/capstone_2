@@ -98,6 +98,25 @@ python3 run_slam_FPGA.py --show-stats
 
 ---
 
+### Option 6: Full FPGA Pipeline Mode (NEW - Pipelined Processing)
+```bash
+cd /home/aryan/Documents/projects/capstone_2/SLAM
+python3 run_slam_FPGA.py --fpga-pipeline
+```
+
+**What's New:**
+- Chains multiple FPGA operations: **Gaussian → FAST Detection → ORB Descriptors → SAD Matching**
+- Single unified pipeline reduces data transfers between CPU and FPGA
+- Aggregated results include corners, SAD values, and disparities in one response
+- Better performance for high-speed processing
+
+**With Statistics:**
+```bash
+python3 run_slam_FPGA.py --fpga-pipeline --show-stats
+```
+
+---
+
 ## ⚙️ Advanced Options
 
 ### Lower Resolution for Speed
@@ -129,6 +148,13 @@ python3 run_slam_FPGA.py --no_traj
 ```bash
 python3 run_slam_FPGA.py --fpga-gauss
 ```
+
+### Enable Full FPGA Pipeline (NEW - Pipelined Mode)
+```bash
+python3 run_slam_FPGA.py --fpga-pipeline
+```
+
+This enables the **chained pipeline mode**: Gaussian → FAST → ORB → SAD with aggregated results for maximum throughput.
 
 ---
 
@@ -319,6 +345,9 @@ python3 run_slam_FPGA.py --disable-fpga
 
 # Low res + fast
 python3 run_slam_FPGA.py --width 480 --fps_cap 20
+
+# Full FPGA pipeline (NEW - Pipelined mode)
+python3 run_slam_FPGA.py --fpga-pipeline --show-stats
 
 # Test SPI
 cd tests && python3 slam_fpga_accelerator.py

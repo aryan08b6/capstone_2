@@ -122,6 +122,9 @@ def parse_args():
     ap.add_argument("--fpga-gauss", action="store_true", default=False,
                     help="Use FPGA for Gaussian blur filtering")
 
+    ap.add_argument("--fpga-pipeline", action="store_true",
+                    help="Enable full FPGA pipeline (Gaussian → FAST → ORB → SAD)")
+
     ap.add_argument("--show-stats", action="store_true",
                     help="Show FPGA acceleration statistics")
 
@@ -367,11 +370,15 @@ def main():
     # Initialize SLAM with FPGA acceleration
     print("[SLAM] Initializing with FPGA acceleration...")
     try:
+        # Handle --fpga-pipeline flag: enables full pipeline (Gaussian + FAST)
+        use_fpga_fast = (args.fpga_fast or args.fpga_pipeline) and not args.disable_fpga
+        use_fpga_gauss = (args.fpga_gauss or args.fpga_pipeline) and not args.disable_fpga
+        
         slam = SLAMWithFPGAAcceleration(
             K=K,
             enable_fpga=not args.disable_fpga,
-            use_fpga_fast=args.fpga_fast and not args.disable_fpga,
-            use_fpga_gauss=args.fpga_gauss and not args.disable_fpga,
+            use_fpga_fast=use_fpga_fast,
+            use_fpga_gauss=use_fpga_gauss,
             max_features=2000,
             min_init_matches=80,
             min_tracked=80,
@@ -465,11 +472,15 @@ def main():
             if hasattr(slam, 'close'):
                 slam.close()
 
+            # Handle --fpga-pipeline flag: enables full pipeline (Gaussian + FAST)
+            use_fpga_fast = (args.fpga_fast or args.fpga_pipeline) and not args.disable_fpga
+            use_fpga_gauss = (args.fpga_gauss or args.fpga_pipeline) and not args.disable_fpga
+            
             slam = SLAMWithFPGAAcceleration(
                 K=K,
                 enable_fpga=not args.disable_fpga,
-                use_fpga_fast=args.fpga_fast and not args.disable_fpga,
-                use_fpga_gauss=args.fpga_gauss and not args.disable_fpga
+                use_fpga_fast=use_fpga_fast,
+                use_fpga_gauss=use_fpga_gauss
             )
 
             global _traj_fig, _traj_ax

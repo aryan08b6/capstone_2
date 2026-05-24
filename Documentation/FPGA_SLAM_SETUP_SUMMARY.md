@@ -187,16 +187,17 @@ python3 run_slam_FPGA.py --disable-fpga
 ```
 Verify SLAM pipeline works before FPGA integration.
 
-### 3. Test with FPGA
+### 5. Test with FPGA
 ```bash
 python3 run_slam_FPGA.py --show-stats
 ```
 Watch statistics to see FPGA corner detection in action.
 
-### 4. Test with Video
+### 6. Test with FPGA Pipeline (NEW - Pipelined Mode)
 ```bash
-python3 run_slam_FPGA.py --input test_video.mp4 --show-stats
+python3 run_slam_FPGA.py --fpga-pipeline --show-stats
 ```
+Tests the new full FPGA pipeline with chained operations (Gaussian → FAST → ORB → SAD).
 
 ---
 
@@ -245,6 +246,15 @@ slam = SLAMWithFPGAAcceleration(
     enable_fpga=False      # All on CPU
 )
 ```
+
+### Enable Full FPGA Pipeline (NEW - Pipelined Mode)
+```python
+slam = SLAMWithFPGAAcceleration(
+    enable_fpga=True,
+    use_fpga_pipeline=True  # Chains: Gaussian → FAST → ORB → SAD
+)
+```
+Enables pipelined processing for better throughput and reduced latency.
 
 ### Adjust FPGA SPI Speed
 ```python

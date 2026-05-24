@@ -92,8 +92,72 @@ Select which SLAM component to offload:
 | 2 | SAD Matching | Stereo depth estimation |
 | 3 | ORB Descriptors | Feature descriptors |
 | 4 | Passthrough | Testing/debugging |
+| 5 | **Full Pipeline** (NEW) | **Chained: Gaussian → FAST → ORB → SAD** |
 
 Modes are selected via 3-bit control signal. Python interface handles this automatically.
+
+### NEW: Full FPGA Pipeline Mode (Pipelined Processing)
+
+Mode 5 enables a **pipelined architecture** where multiple operations are chained:
+- **Gaussian Blur** (preprocessing)
+- **FAST Corner Detection** (feature detection)  
+- **ORB Descriptor Extraction** (feature descriptors)
+- **SAD Block Matching** (stereo matching)
+
+Results are aggregated in a single response containing corners, SAD values, and disparities.
+
+**Use case:** Better throughput for high-speed processing by reducing CPU-FPGA round trips.
+
+```python
+slam = SLAMWithFPGAAcceleration(
+    enable_fpga=True,
+    use_fpga_pipeline=True  # Enable pipelined mode
+)
+annotated = slam.process(frame)
+```
+
+## Using Pipeline Mode in Python
+
+### Low-level Pipeline Interface
+
+```python
+from tests.slam_fpga_accelerator import SLAMFPGAAccelerator
+
+accel = SLAMFPGAAccelerator(speed_hz=1000000)
+
+# Process image through full pipeline
+result = accel.process_pipeline_full(image)
+
+# Result contains aggregated data:
+# - corners: List of (x, y) coordinates
+# - corner_strengths: Strength values for each corner
+# - sad_values: SAD matching scores
+# - disparities: Disparity estimates
+# - processing_time_ms: Total processing time
+
+print(f"Detected {len(result['corners'])} corners")
+print(f"Processing time: {result['processing_time_ms']:.2f}ms")
+```
+
+### High-level SLAM Integration
+
+```python
+from slam_fpga_integrated import SLAMWithFPGAAcceleration
+
+# Enable pipeline mode for maximum throughput
+slam = SLAMWithFPGAAcceleration(
+    enable_fpga=True,
+    use_fpga_pipeline=True,
+    use_fpga_fast=True,      # FAST corners (part of pipeline)
+    use_fpga_gauss=False     # Gaussian is part of pipeline when enabled
+)
+
+# Process frames normally - pipeline is handled internally
+while frames_available:
+    frame = get_next_frame()
+    annotated = slam.process(frame)
+    stats = slam.get_stats()
+```
 
 ## Data Flow Example
 
