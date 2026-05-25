@@ -204,12 +204,17 @@ class FrameSource:
 
 def _extract_positions(slam) -> np.ndarray:
     """Extract camera positions from SLAM object."""
-    if hasattr(slam, "traj") and len(slam.slam.traj) > 0:
+    if hasattr(slam, "traj") and len(slam.traj) > 0:
+        pts = np.array(slam.traj, dtype=np.float64)
+        if pts.ndim == 2 and pts.shape[1] == 3:
+            return pts
+
+    if hasattr(slam, "slam") and hasattr(slam.slam, "traj") and len(slam.slam.traj) > 0:
         pts = np.array(slam.slam.traj, dtype=np.float64)
         if pts.ndim == 2 and pts.shape[1] == 3:
             return pts
 
-    if hasattr(slam, "keyframes") and len(slam.slam.keyframes) > 0:
+    if hasattr(slam, "slam") and hasattr(slam.slam, "keyframes") and len(slam.slam.keyframes) > 0:
         kfs = slam.slam.keyframes
         pts = []
         for kf in kfs:
@@ -334,7 +339,7 @@ def build_display(feat_img: np.ndarray,
     if show_hud and slam_stats:
         y_offset = 50
         if slam_stats.get('fpga_enabled', False):
-            fpga_tag = "✓ FPGA" if slam_stats.get('fpga_connected', False) else "✗ FPGA"
+            fpga_tag = "FPGA OK" if slam_stats.get('fpga_connected', False) else "FPGA NO"
             cv2.putText(display, fpga_tag,
                        (w - 80, y_offset),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 0), 1, cv2.LINE_AA)
