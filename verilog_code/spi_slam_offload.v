@@ -253,45 +253,56 @@ module spi_slave_slam_offload (
     initial begin
         miso = 1'b0;
     end
-
     always @(posedge clk) begin
+        // Default
         out_fifo_rd_en <= 0;
 
         if (!secure_cs_n) begin
-            // Transaction active: shift data out on falling edges
-            tx_state <= 0;
-            tx_ready <= 0;
-
-            if (sclk_falling) begin
-                tx_shift_64 <= {tx_shift_64[62:0], 1'b0};
-                miso        <= tx_shift_64[62];
+            // CS asserted (active low) - transaction active
+            // If we don't have data prefetched, try to fetch immediately
+            if (!tx_ready) begin
+                if (!out_fifo_empty) begin
+                    // Request read from output fifo; data will appear next cycle
+                    out_fifo_rd_en <= 1;
+                end else begin
+                    // No data: drive MISO low to avoid pull-up 0xFF responses
+                    tx_shift_64 <= 64'h0;
+                    miso <= 1'b0;
+                end
+            end else begin
+                // When sclk falls, shift out the next bit
+                if (sclk_falling) begin
+                    miso <= tx_shift_64[63];
+                    tx_shift_64 <= {tx_shift_64[62:0], 1'b0};
+                end
             end
-        end
-        else begin
-            // Bus Idle: Pre-fetch the next 64 bits from OUTPUT_FIFO
+        end else begin
+            // Bus idle: pre-fetch the next 64-bit word into the shift register
             case (tx_state)
                 0: begin
                     if (!tx_ready) begin
                         if (!out_fifo_empty) begin
                             out_fifo_rd_en <= 1;
-                            tx_state       <= 1;
+                            tx_state <= 1;
                         end else begin
                             tx_shift_64 <= 64'h0;
-                            miso        <= 1'b0;
+                            miso <= 1'b0;
                         end
                     end
                 end
                 1: begin
+                    // Wait one cycle for FIFO q to be valid
                     tx_state <= 2;
                 end
                 2: begin
+                    // Load shift register with FIFO data and mark ready
                     tx_shift_64 <= out_fifo_q;
-                    miso        <= out_fifo_q[63];
-                    tx_ready    <= 1;
-                    tx_state    <= 3;
+                    miso <= out_fifo_q[63];
+                    tx_ready <= 1;
+                    tx_state <= 3;
                 end
                 3: begin
-                    // Hold until CS goes low
+                    // Remain ready until transaction begins
                 end
             endcase
         end
