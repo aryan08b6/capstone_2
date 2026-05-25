@@ -68,6 +68,23 @@ class SLAMFPGAAccelerator:
         result['sad_value'] = (result['sad_value_hi'] << 8) | result['sad_value_lo']
         return result
 
+    def _parse_pipeline_result(self, raw, x, y, results):
+        parsed = {
+            'disparity': raw[0],
+            'sad_value': (raw[1] << 8) | raw[2],
+            'corner_strength': raw[3],
+            'corner_flags': raw[4]
+        }
+
+        for i in range(8):
+            if (parsed['corner_flags'] >> i) & 1:
+                results['corners'].append((x + i, y))
+                results['corner_strengths'].append(parsed['corner_strength'])
+
+        results['sad_values'].append(parsed['sad_value'])
+        results['disparities'].append(parsed['disparity'])
+        results['raw_flags'].append(parsed['corner_flags'])
+
     def process_pipeline_full(self, image, prev_image=None):
         """
         Process image through full FPGA pipeline: Gaussian → FAST → ORB → SAD.
@@ -95,31 +112,24 @@ class SLAMFPGAAccelerator:
         }
 
         t_start = time.time()
+        self.spi.xfer2([0x00] * 8)
+        prev_coords = None
 
-        # Process image in 8-pixel chunks row by row
         for y in range(1, height - 1):
             for x in range(0, width - 7, 8):
-                # Extract 8-pixel chunks from current row
                 curr_chunk = image[y, x:x+8].astype(np.uint8)
-
-                # Send current row chunk to FPGA and receive the delayed reply
                 raw = self.send_64bit(curr_chunk)
-                parsed = {
-                    'disparity': raw[0],
-                    'sad_value': (raw[1] << 8) | raw[2],
-                    'corner_strength': raw[3],
-                    'corner_flags': raw[4]
-                }
 
-                # Parse corner flags (8-bit bitmask)
-                for i in range(8):
-                    if (parsed['corner_flags'] >> i) & 1:
-                        results['corners'].append((x + i, y))
-                        results['corner_strengths'].append(parsed['corner_strength'])
+                if prev_coords is not None:
+                    px, py = prev_coords
+                    self._parse_pipeline_result(raw, px, py, results)
 
-                results['sad_values'].append(parsed['sad_value'])
-                results['disparities'].append(parsed['disparity'])
-                results['raw_flags'].append(parsed['corner_flags'])
+                prev_coords = (x, y)
+
+        if prev_coords is not None:
+            raw = self.send_64bit([0x00] * 8)
+            px, py = prev_coords
+            self._parse_pipeline_result(raw, px, py, results)
 
         results['processing_time_ms'] = (time.time() - t_start) * 1000
         return results
@@ -136,26 +146,35 @@ class SLAMFPGAAccelerator:
         corners = []
         strengths = []
 
-        # Process every 8 pixels as a row
+        self.set_mode(self.FAST_CORNERS)
+        self.spi.xfer2([0x00] * 8)
+        prev_coords = None
+
         for y in range(1, height - 1):
             for x in range(0, width - 8, 8):
                 curr_row = image[y, x:x+8]
-                prev_r = image[y-1, x:x+8] if y > 0 else np.zeros(8, np.uint8)
-                next_r = image[y+1, x:x+8] if y < height-1 else np.zeros(8, np.uint8)
+                raw = self.send_64bit(curr_row)
 
-                # Send current row chunk to FPGA in the correct byte order
-                self.set_mode(self.FAST_CORNERS)
-                result = self.send_64bit(curr_row)
+                if prev_coords is not None:
+                    px, py = prev_coords
+                    flags = raw[1]
+                    strength = raw[0]
+                    for i in range(8):
+                        if (flags >> i) & 1:
+                            corners.append((px + i, py))
+                            strengths.append(strength & 0x0F)
 
-                # Parse result: [strength, flags, reserved...]
-                flags = result[1]
-                strength = result[0]
+                prev_coords = (x, y)
 
-                # Extract corner flags for each pixel
-                for i in range(8):
-                    if (flags >> i) & 1:
-                        corners.append((x + i, y))
-                        strengths.append(strength & 0x0F)
+        if prev_coords is not None:
+            raw = self.send_64bit([0x00] * 8)
+            px, py = prev_coords
+            flags = raw[1]
+            strength = raw[0]
+            for i in range(8):
+                if (flags >> i) & 1:
+                    corners.append((px + i, py))
+                    strengths.append(strength & 0x0F)
 
         return np.array(corners, dtype=np.float32), np.array(strengths, dtype=np.uint8)
 
@@ -170,16 +189,24 @@ class SLAMFPGAAccelerator:
         output = np.zeros_like(image)
 
         self.set_mode(self.GAUSSIAN_BLUR)
+        self.spi.xfer2([0x00] * 8)
+        prev_coords = None
 
-        # Process row by row
         for y in range(1, height - 1):
             for x in range(0, width - 8, 8):
                 curr_row = image[y, x:x+8]
-                prev_r = image[y-1, x:x+8]
-                next_r = image[y+1, x:x+8]
+                raw = self.send_64bit(curr_row)
 
-                result = self.send_64bit(curr_row)
-                output[y, x:x+8] = np.frombuffer(bytes(result), dtype=np.uint8)
+                if prev_coords is not None:
+                    px, py = prev_coords
+                    output[py, px:px+8] = np.frombuffer(bytes(raw), dtype=np.uint8)
+
+                prev_coords = (x, y)
+
+        if prev_coords is not None:
+            raw = self.send_64bit([0x00] * 8)
+            px, py = prev_coords
+            output[py, px:px+8] = np.frombuffer(bytes(raw), dtype=np.uint8)
 
         return output
 

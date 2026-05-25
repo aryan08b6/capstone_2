@@ -113,6 +113,10 @@ def parse_args():
     ap.add_argument("--disable-fpga", action="store_true",
                     help="Disable FPGA acceleration (CPU-only)")
 
+    ap.add_argument("--disable-cpu-fallback", "--fpga-only",
+                    action="store_true", dest="disable_cpu_fallback",
+                    help="Force FPGA-only mode and do not fall back to CPU feature detection")
+
     ap.add_argument("--fpga-fast", action="store_true", default=True,
                     help="Use FPGA for FAST corner detection (default: enabled)")
 
@@ -386,6 +390,7 @@ def main():
             use_fpga_pipeline=use_fpga_pipeline,
             use_fpga_fast=use_fpga_fast,
             use_fpga_gauss=use_fpga_gauss,
+            disable_cpu_fallback=(args.disable_cpu_fallback and not args.disable_fpga),
             spi_speed=args.spi_speed,
             max_features=2000,
             min_init_matches=80,
@@ -491,6 +496,7 @@ def main():
                 use_fpga_pipeline=use_fpga_pipeline,
                 use_fpga_fast=use_fpga_fast,
                 use_fpga_gauss=use_fpga_gauss,
+                disable_cpu_fallback=(args.disable_cpu_fallback and not args.disable_fpga),
                 spi_speed=args.spi_speed
             )
 
