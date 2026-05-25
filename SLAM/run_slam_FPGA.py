@@ -371,16 +371,17 @@ def main():
     print("[SLAM] Initializing with FPGA acceleration...")
     try:
         # Handle --fpga-pipeline flag: enables full pipeline (Gaussian + FAST)
-        use_fpga_fast = (args.fpga_fast or args.fpga_pipeline) and not args.disable_fpga
-        use_fpga_gauss = (args.fpga_gauss or args.fpga_pipeline) and not args.disable_fpga
         use_fpga_pipeline = args.fpga_pipeline and not args.disable_fpga
-        
+        use_fpga_fast = args.fpga_fast and not args.disable_fpga and not use_fpga_pipeline
+        use_fpga_gauss = args.fpga_gauss and not args.disable_fpga and not use_fpga_pipeline
+
         slam = SLAMWithFPGAAcceleration(
             K=K,
             enable_fpga=not args.disable_fpga,
             use_fpga_pipeline=use_fpga_pipeline,
             use_fpga_fast=use_fpga_fast,
             use_fpga_gauss=use_fpga_gauss,
+            spi_speed=args.spi_speed,
             max_features=2000,
             min_init_matches=80,
             min_tracked=80,
@@ -475,16 +476,17 @@ def main():
                 slam.close()
 
             # Handle --fpga-pipeline flag: enables full pipeline (Gaussian + FAST)
-            use_fpga_fast = (args.fpga_fast or args.fpga_pipeline) and not args.disable_fpga
-            use_fpga_gauss = (args.fpga_gauss or args.fpga_pipeline) and not args.disable_fpga
             use_fpga_pipeline = args.fpga_pipeline and not args.disable_fpga
-            
+            use_fpga_fast = args.fpga_fast and not args.disable_fpga and not use_fpga_pipeline
+            use_fpga_gauss = args.fpga_gauss and not args.disable_fpga and not use_fpga_pipeline
+
             slam = SLAMWithFPGAAcceleration(
                 K=K,
                 enable_fpga=not args.disable_fpga,
                 use_fpga_pipeline=use_fpga_pipeline,
                 use_fpga_fast=use_fpga_fast,
-                use_fpga_gauss=use_fpga_gauss
+                use_fpga_gauss=use_fpga_gauss,
+                spi_speed=args.spi_speed
             )
 
             global _traj_fig, _traj_ax

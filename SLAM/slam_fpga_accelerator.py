@@ -35,33 +35,26 @@ class SLAMFPGAAccelerator:
         """Select computation mode via SPI command byte."""
         self.current_mode = mode
         # Send mode selection command to FPGA (0x80 | mode)
-        cmd = [0x80 | (mode & 0x07), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-        self.spi.xfer(cmd)
-        time.sleep(0.001)  # Small delay for FPGA to switch modes
+        cmd = list((0x80 | (mode & 0x07)).to_bytes(8, byteorder='big'))
+        self.spi.xfer2(cmd)
 
     def send_64bit(self, data):
-        """Send 64-bit data to FPGA and receive result."""
+        """Send 64-bit data to FPGA and receive the delayed reply."""
         if isinstance(data, int):
-            # Convert integer to 8 bytes (big-endian)
-            payload = [(data >> (i*8)) & 0xFF for i in range(8)]
+            payload = list(data.to_bytes(8, byteorder='big'))
         else:
-            # Assume numpy array or list of 8 bytes
-            payload = [int(x) & 0xFF for x in data[:8]]
+            payload = [int(x) & 0xFF for x in data[:8]][::-1]
 
-        # Send data
-        self.spi.xfer(payload)
-        time.sleep(0.001)  # Wait for processing
-
-        # Receive result
-        dummy_bytes = [0x00] * 8
-        rx = self.spi.xfer(dummy_bytes)
-
+        # Send payload and discard the reply for the current transaction.
+        self.spi.xfer2(payload)
+        # The FPGA output is returned on the next transaction.
+        rx = self.spi.xfer2([0x00] * 8)
         return rx
 
     def recv_pipeline_result(self):
         """Receive 8-byte aggregated result from FPGA pipeline."""
         dummy_bytes = [0x00] * 8
-        rx_data = self.spi.xfer(dummy_bytes)
+        rx_data = self.spi.xfer2(dummy_bytes)
 
         result = {
             'corner_flags': rx_data[0],        # Byte 0: 8-bit corner bitmask
@@ -109,21 +102,24 @@ class SLAMFPGAAccelerator:
                 # Extract 8-pixel chunks from current row
                 curr_chunk = image[y, x:x+8].astype(np.uint8)
 
-                # Send current row chunk to FPGA
-                self.send_64bit(curr_chunk)
-
-                # Receive aggregated result from FPGA
-                result = self.recv_pipeline_result()
+                # Send current row chunk to FPGA and receive the delayed reply
+                raw = self.send_64bit(curr_chunk)
+                parsed = {
+                    'disparity': raw[0],
+                    'sad_value': (raw[1] << 8) | raw[2],
+                    'corner_strength': raw[3],
+                    'corner_flags': raw[4]
+                }
 
                 # Parse corner flags (8-bit bitmask)
                 for i in range(8):
-                    if (result['corner_flags'] >> i) & 1:
+                    if (parsed['corner_flags'] >> i) & 1:
                         results['corners'].append((x + i, y))
-                        results['corner_strengths'].append(result['corner_strength'])
+                        results['corner_strengths'].append(parsed['corner_strength'])
 
-                results['sad_values'].append(result['sad_value'])
-                results['disparities'].append(result['disparity'])
-                results['raw_flags'].append(result['corner_flags'])
+                results['sad_values'].append(parsed['sad_value'])
+                results['disparities'].append(parsed['disparity'])
+                results['raw_flags'].append(parsed['corner_flags'])
 
         results['processing_time_ms'] = (time.time() - t_start) * 1000
         return results
@@ -147,14 +143,9 @@ class SLAMFPGAAccelerator:
                 prev_r = image[y-1, x:x+8] if y > 0 else np.zeros(8, np.uint8)
                 next_r = image[y+1, x:x+8] if y < height-1 else np.zeros(8, np.uint8)
 
-                # Pack rows as 64-bit values
-                current_64 = int.from_bytes(curr_row.tobytes(), 'big')
-                prev_64 = int.from_bytes(prev_r.tobytes(), 'big')
-                next_64 = int.from_bytes(next_r.tobytes(), 'big')
-
-                # Send to FPGA
+                # Send current row chunk to FPGA in the correct byte order
                 self.set_mode(self.FAST_CORNERS)
-                result = self.send_64bit(current_64)
+                result = self.send_64bit(curr_row)
 
                 # Parse result: [strength, flags, reserved...]
                 flags = result[1]
@@ -187,9 +178,7 @@ class SLAMFPGAAccelerator:
                 prev_r = image[y-1, x:x+8]
                 next_r = image[y+1, x:x+8]
 
-                curr_64 = int.from_bytes(curr_row.tobytes(), 'big')
-
-                result = self.send_64bit(curr_64)
+                result = self.send_64bit(curr_row)
                 output[y, x:x+8] = np.frombuffer(bytes(result), dtype=np.uint8)
 
         return output

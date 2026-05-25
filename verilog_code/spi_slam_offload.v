@@ -113,6 +113,7 @@ module spi_slave_slam_offload (
 
     reg [2:0] proc_state = 0;
     reg [2:0] pipeline_mode = 0;
+    reg        cmd_valid = 0;
 
     // Row buffers for Gaussian filter context
     reg [63:0] gaussian_prev_row = 0;
@@ -184,69 +185,62 @@ module spi_slave_slam_offload (
         in_fifo_rd_en  <= 0;
         out_fifo_wr_en <= 0;
 
-        case (proc_state)
-            STATE_IDLE: begin
-                if (!in_fifo_empty && !out_fifo_full) begin
-                    // Check mode from first byte of input
-                    if ((in_fifo_q[7:5] == 3'b100) || (in_fifo_q[7:5] == 3'b101)) begin
-                        // Pipeline mode (0x80-0x9F command range)
-                        pipeline_mode <= in_fifo_q[2:0];
+        if (secure_cs_n) begin
+            proc_state <= STATE_IDLE;
+            cmd_valid <= 0;
+            pipeline_mode <= 0;
+        end else begin
+            case (proc_state)
+                STATE_IDLE: begin
+                    if (!in_fifo_empty && !out_fifo_full) begin
                         in_fifo_rd_en <= 1;
-                        proc_state <= STATE_RECEIVE;
-                    end else begin
-                        // Fallback to existing FAST-only mode
-                        in_fifo_rd_en <= 1;
-                        proc_state <= STATE_RECEIVE;
+
+                        if (!cmd_valid) begin
+                            // First 64-bit word in each transaction is the command word
+                            cmd_valid <= 1;
+                            pipeline_mode <= in_fifo_q[58:56];
+                        end else begin
+                            // Normal image data chunk
+                            gaussian_prev_row <= gaussian_curr_row;
+                            gaussian_curr_row <= gaussian_next_row;
+                            gaussian_next_row <= in_fifo_q;
+                            gaussian_out_buf <= gaussian_filtered;
+                            proc_state <= STATE_FAST;
+                        end
                     end
                 end
-            end
 
-            STATE_RECEIVE: begin
-                // Shift row buffers for Gaussian context
-                gaussian_prev_row <= gaussian_curr_row;
-                gaussian_curr_row <= gaussian_next_row;
-                gaussian_next_row <= in_fifo_q;
-
-                // Apply Gaussian filter immediately
-                gaussian_out_buf <= gaussian_filtered;
-
-                proc_state <= STATE_FAST;
-            end
-
-            STATE_FAST: begin
-                // FAST detection on buffered rows
-                fast_flags_buf <= fast_flags;
-                fast_strength_buf <= fast_strength;
-                proc_state <= STATE_ORB;
-            end
-
-            STATE_ORB: begin
-                // ORB descriptor extraction (run if corners detected)
-                if (fast_flags_buf != 8'b0) begin
-                    orb_descriptor_buf <= orb_descriptor_result;
-                end else begin
-                    orb_descriptor_buf <= 64'b0;
+                STATE_FAST: begin
+                    fast_flags_buf <= fast_flags;
+                    fast_strength_buf <= fast_strength;
+                    proc_state <= STATE_ORB;
                 end
-                proc_state <= STATE_SAD;
-            end
 
-            STATE_SAD: begin
-                // SAD block matching
-                sad_value_buf <= sad_result;
-                disparity_buf <= best_disparity_result;
-                proc_state <= STATE_OUTPUT;
-            end
+                STATE_ORB: begin
+                    if (pipeline_mode == PIPELINE_FULL && fast_flags_buf != 8'b0) begin
+                        orb_descriptor_buf <= orb_descriptor_result;
+                    end else begin
+                        orb_descriptor_buf <= 64'b0;
+                    end
+                    proc_state <= STATE_SAD;
+                end
 
-            STATE_OUTPUT: begin
-                // Format output: [disparity:8 | sad_hi:8 | sad_lo:8 | strength:8 | flags:8 | reserved:24]
-                out_fifo_data <= {disparity_buf, sad_value_buf[15:8],
-                                 sad_value_buf[7:0], fast_strength_buf, fast_flags_buf};
-                out_fifo_wr_en <= 1;
-                proc_state <= STATE_IDLE;
-            end
+                STATE_SAD: begin
+                    sad_value_buf <= sad_result;
+                    disparity_buf <= best_disparity_result;
+                    proc_state <= STATE_OUTPUT;
+                end
 
-            default: proc_state <= STATE_IDLE;
-        endcase
+                STATE_OUTPUT: begin
+                    out_fifo_data <= {disparity_buf, sad_value_buf[15:8],
+                                     sad_value_buf[7:0], fast_strength_buf, fast_flags_buf};
+                    out_fifo_wr_en <= 1;
+                    proc_state <= STATE_IDLE;
+                end
+
+                default: proc_state <= STATE_IDLE;
+            endcase
+        end
     end
 
     // -----------------------------------------------------------------

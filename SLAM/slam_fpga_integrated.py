@@ -23,6 +23,7 @@ class SLAMWithFPGAAcceleration:
                  use_fpga_pipeline=False,
                  use_fpga_fast=True,
                  use_fpga_gauss=False,
+                 spi_speed=1000000,
                  max_features=2000,
                  min_init_matches=80,
                  min_tracked=80,
@@ -49,7 +50,7 @@ class SLAMWithFPGAAcceleration:
         self.fpga = None
         if self.enable_fpga:
             try:
-                self.fpga = SLAMFPGAAccelerator(speed_hz=1000000)
+                self.fpga = SLAMFPGAAccelerator(speed_hz=spi_speed)
                 print("[SLAM] FPGA acceleration enabled")
             except Exception as e:
                 print(f"[SLAM] FPGA init failed: {e}, falling back to CPU")
@@ -67,7 +68,7 @@ class SLAMWithFPGAAcceleration:
         out = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
         # Optionally pre-filter with FPGA Gaussian blur
-        if self.enable_fpga and self.use_fpga_gauss and self.fpga:
+        if self.enable_fpga and self.use_fpga_gauss and self.fpga and not self.use_fpga_pipeline:
             try:
                 gray = self.fpga.gaussian_blur_fpga(gray)
                 cv2.putText(out, "[FPGA Gauss]", (10, 60),

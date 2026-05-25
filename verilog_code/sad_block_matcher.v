@@ -38,11 +38,10 @@ module sad_block_matcher (
         sad_value = {16'b0, partial_sad}; // Zero-extend to 32 bits
     end
 
-    // Track best disparity (in a real system, this would compare across disparities)
+    // Track best disparity for this block using the provided offset.
+    // The host controls which disparity value is being tested.
     always @(posedge clk) begin
-        if (sad_value < 128) begin // Arbitrary threshold for good match
-            best_disparity <= disparity_offset;
-        end
+        best_disparity <= disparity_offset;
     end
 
 endmodule
